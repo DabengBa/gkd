@@ -421,6 +421,11 @@ fun useSettingsPage(): ScaffoldExt {
                         checked = TrackService.isRunning.collectAsState().value,
                         onCheckedChange = vm.viewModelScope.launchAsFn<Boolean> {
                             if (it) {
+                                mainVm.dialogFlow.waitResult(
+                                    title = "使用须知",
+                                    text = "开启「轨迹提示」后点击或滑动后会在屏幕上使用悬浮窗绘制轨迹(一段时间后消失)，如果新触摸事件恰好在悬浮窗区域内，可能会被目标应用拒绝，从而导致点击或滑动无响应",
+                                    confirmText = "继续",
+                                )
                                 requiredPermission(context, foregroundServiceSpecialUseState)
                                 requiredPermission(context, notificationState)
                                 requiredPermission(context, canDrawOverlaysState)

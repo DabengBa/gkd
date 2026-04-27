@@ -2,9 +2,12 @@ package li.songe.gkd.util
 
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import li.songe.loc.Loc
 import java.util.WeakHashMap
 
@@ -59,6 +62,17 @@ interface OnSimpleLife {
         }
         onDestroyed {
             toast("${name}已关闭", loc = loc)
+        }
+    }
+
+    fun runScopePost(delayMillis: Long, r: Runnable) {
+        if (delayMillis == 0L && isMainThread) {
+            r.run()
+            return
+        }
+        scope.launch(Dispatchers.Main) {
+            delay(delayMillis)
+            r.run()
         }
     }
 }

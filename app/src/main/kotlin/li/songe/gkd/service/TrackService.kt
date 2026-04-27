@@ -1,31 +1,22 @@
 package li.songe.gkd.service
 
+import android.animation.ValueAnimator
 import android.content.res.Configuration
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.view.Gravity
 import android.view.Surface
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.util.lerp
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.setViewTreeLifecycleOwner
@@ -33,10 +24,11 @@ import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import kotlinx.atomicfu.atomic
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import li.songe.gkd.app
 import li.songe.gkd.notif.StopServiceReceiver
@@ -45,9 +37,10 @@ import li.songe.gkd.shizuku.casted
 import li.songe.gkd.util.AndroidTarget
 import li.songe.gkd.util.OnSimpleLife
 import li.songe.gkd.util.ScreenUtils
-import li.songe.gkd.util.runMainPost
 import li.songe.gkd.util.startForegroundServiceByClass
 import li.songe.gkd.util.stopServiceByClass
+import kotlin.math.min
+import kotlin.math.pow
 
 class TrackService : LifecycleService(), SavedStateRegistryOwner, OnSimpleLife {
     override fun onCreate() {
@@ -73,177 +66,272 @@ class TrackService : LifecycleService(), SavedStateRegistryOwner, OnSimpleLife {
         lifecycleScope.launch { resizeFlow.emit(Unit) }
     }
 
-    val curRotationFlow = MutableStateFlow(app.compatDisplay.rotation).apply {
-        lifecycleScope.launch {
-            resizeFlow.collect { update { app.compatDisplay.rotation } }
-        }
-    }
     val strokeWidth = 2f
-    val lineMargin = 75f
+    val pointSize = ScreenUtils.getScreenSize().let { min(it.width, it.height) } * 0.1f
+    val pointRadius = pointSize / 2
 
     private fun DrawScope.drawTrackPoint(center: Offset) {
-
         drawLine(
             color = Color.Yellow,
-            start = Offset(center.x, center.y - lineMargin),
-            end = Offset(center.x, center.y + lineMargin),
+            start = Offset(center.x, center.y - pointRadius),
+            end = Offset(center.x, center.y + pointRadius),
             strokeWidth = strokeWidth,
         )
         drawLine(
             color = Color.Yellow,
-            start = Offset(center.x - lineMargin, center.y),
-            end = Offset(center.x + lineMargin, center.y),
+            start = Offset(center.x - pointRadius, center.y),
+            end = Offset(center.x + pointRadius, center.y),
             strokeWidth = strokeWidth,
         )
-        drawCircle(
-            color = Color.Red,
-            radius = 10f,
-            center = center,
-        )
-        drawCircle(
-            color = Color.Red,
-            radius = 20f,
-            center = center,
-            style = Stroke(4f)
-        )
-        drawCircle(
-            color = Color.Red,
-            radius = 30f,
-            center = center,
-            style = Stroke(4f)
-        )
+        val ringSize = 3
+        repeat(ringSize) { i ->
+            drawCircle(
+                color = Color.Red,
+                radius = pointRadius * 0.8f / ringSize * (i + 1),
+                center = center,
+                style = Stroke(strokeWidth)
+            )
+        }
     }
 
-    @Composable
-    private fun SwipePointCanvas(swipePoint: SwipeTrackPoint, curRotation: Int) {
-        val progress = remember { Animatable(0f) }
-        LaunchedEffect(null) {
-            // 匀速直线
-            progress.animateTo(
-                targetValue = 1f,
-                animationSpec = tween(swipePoint.duration.toInt(), easing = LinearEasing),
-            )
-            delayRemovePosition(swipePoint.id)
+    private abstract inner class FloatLayer {
+        private val view = ComposeView(this@TrackService).apply {
+            setViewTreeSavedStateRegistryOwner(this@TrackService)
+            setViewTreeLifecycleOwner(this@TrackService)
+            setContent(::ComposeContent)
         }
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val startCenter = swipePoint.start.getCenter(size, curRotation)
-            drawTrackPoint(startCenter)
-            val endCenter = swipePoint.end.getCenter(size, curRotation)
-            val midCenter = Offset(
-                lerp(startCenter.x, endCenter.x, progress.value),
-                lerp(startCenter.y, endCenter.y, progress.value)
+        private val layoutParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.START or Gravity.TOP
+            if (AndroidTarget.S) {
+                alpha = app.inputManager.maximumObscuringOpacityForTouch
+            }
+        }
+        private val subScope = MainScope()
+        private val boundsRect = Rect()
+        protected var connected = false
+        protected var removed = false
+
+        @Composable
+        abstract fun ComposeContent()
+        abstract fun syncRotation()
+
+        fun removeView() {
+            subScope.cancel()
+            windowManager.removeView(view)
+            removed = true
+        }
+
+        fun getRect(): Rect? {
+            if (!connected || removed) return null
+            return boundsRect
+        }
+
+        fun setAlpha(alpha: Float) {
+            if (!connected || removed) return
+            if (layoutParams.alpha == alpha) return
+            layoutParams.alpha = alpha
+            windowManager.updateViewLayout(view, layoutParams)
+        }
+
+        fun updateViewLayout(
+            x: Number,
+            y: Number,
+            width: Number = layoutParams.width,
+            height: Number = layoutParams.height,
+        ) {
+            layoutParams.x = x.toInt()
+            layoutParams.y = y.toInt()
+            layoutParams.width = width.toInt()
+            layoutParams.height = height.toInt()
+            boundsRect.set(
+                layoutParams.x,
+                layoutParams.y,
+                layoutParams.x + layoutParams.width,
+                layoutParams.y + layoutParams.height,
             )
-            drawTrackPoint(midCenter)
+            if (!connected) {
+                connected = true
+                windowManager.addView(view, layoutParams)
+                subScope.launch { resizeFlow.collect { syncRotation() } }
+            } else {
+                windowManager.updateViewLayout(view, layoutParams)
+                recalcOverlappingAlpha()
+            }
+        }
+    }
+
+    private inner class PointFloatLayer(val point: TrackPoint) : FloatLayer() {
+        @Composable
+        override fun ComposeContent() = Canvas(modifier = Modifier.fillMaxSize()) {
+            drawTrackPoint(Offset(pointRadius, pointRadius))
+        }
+
+        override fun syncRotation() {
+            val (x, y) = point.getCurCenter() - Offset(pointRadius, pointRadius)
+            updateViewLayout(x, y)
+        }
+
+        init {
+            updateViewLayout(point.x - pointRadius, point.y - pointRadius, pointSize, pointSize)
+        }
+    }
+
+    private inner class SwipePointFloatLayer(val swipePoint: SwipeTrackPoint) : FloatLayer() {
+        @Composable
+        override fun ComposeContent() = Canvas(modifier = Modifier.fillMaxSize()) {
+            val sc = swipePoint.start.getCurCenter()
+            val ec = swipePoint.end.getCurCenter()
+            val start = Offset(
+                if (sc.x <= ec.x) pointRadius else size.width - pointRadius,
+                if (sc.y <= ec.y) pointRadius else size.height - pointRadius
+            )
+            val end = Offset(
+                if (sc.x <= ec.x) size.width - pointRadius else pointRadius,
+                if (sc.y <= ec.y) size.height - pointRadius else pointRadius
+            )
+            drawTrackPoint(start)
+            drawTrackPoint(end)
             drawLine(
                 color = Color.Blue,
-                start = startCenter,
-                end = midCenter,
+                start = start,
+                end = end,
                 strokeWidth = strokeWidth,
             )
         }
-    }
 
-    @Composable
-    fun ComposeContent() {
-        val curRotation by curRotationFlow.collectAsState()
-        val positionList = pointListFlow.collectAsState().value
-        Canvas(
-            modifier = Modifier.fillMaxSize()
-        ) {
-            positionList.forEach { point ->
-                drawTrackPoint(point.getCenter(size, curRotation))
-            }
+        override fun syncRotation() {
+            val f = animator.animatedValue as Float
+            val sc = swipePoint.start.getCurCenter()
+            val ec = swipePoint.end.getCurCenter()
+            val cur = Offset(sc.x + (ec.x - sc.x) * f, sc.y + (ec.y - sc.y) * f)
+            updateViewLayout(
+                minOf(sc.x, cur.x) - pointRadius,
+                minOf(sc.y, cur.y) - pointRadius,
+                maxOf(sc.x, cur.x) - minOf(sc.x, cur.x) + pointSize,
+                maxOf(sc.y, cur.y) - minOf(sc.y, cur.y) + pointSize
+            )
         }
-        val swipePointList = swipePointListFlow.collectAsState().value
-        swipePointList.forEach { swipePoint ->
-            key(swipePoint.id) { SwipePointCanvas(swipePoint, curRotation) }
-        }
-    }
 
-    val view by lazy {
-        ComposeView(this).apply {
-            setViewTreeSavedStateRegistryOwner(this@TrackService)
-            setViewTreeLifecycleOwner(this@TrackService)
-            setContent {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    ComposeContent()
+        private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = swipePoint.duration
+            addUpdateListener {
+                if (removed) {
+                    cancel()
+                } else {
+                    val f = it.animatedValue as Float
+                    val sc = swipePoint.start.getCurCenter()
+                    val ec = swipePoint.end.getCurCenter()
+                    val cur = Offset(sc.x + (ec.x - sc.x) * f, sc.y + (ec.y - sc.y) * f)
+                    updateViewLayout(
+                        minOf(sc.x, cur.x) - pointRadius,
+                        minOf(sc.y, cur.y) - pointRadius,
+                        maxOf(sc.x, cur.x) - minOf(sc.x, cur.x) + pointSize,
+                        maxOf(sc.y, cur.y) - minOf(sc.y, cur.y) + pointSize
+                    )
                 }
             }
         }
+
+        init {
+            val sc = swipePoint.start.getCurCenter()
+            updateViewLayout(sc.x - pointRadius, sc.y - pointRadius, pointSize, pointSize)
+            animator.start()
+        }
     }
 
-    val layoutParams = WindowManager.LayoutParams(
-        ScreenUtils.getScreenWidth(),
-        ScreenUtils.getScreenHeight(),
-        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-        PixelFormat.TRANSLUCENT,
-    ).apply {
-        gravity = Gravity.START or Gravity.TOP
-        if (AndroidTarget.S) {
-            // fix #1325
-            alpha = app.inputManager.maximumObscuringOpacityForTouch
+    private val layerMap = hashMapOf<Int, FloatLayer>().apply {
+        onDestroyed {
+            forEach { it.value.removeView() }
+            clear()
+        }
+    }
+
+    private fun recalcOverlappingAlpha() {
+        if (!AndroidTarget.S) return
+        val maxOpacity = app.inputManager.maximumObscuringOpacityForTouch
+        val entries = layerMap.values.mapNotNull { layer ->
+            layer.getRect()?.let { rect -> layer to rect }
+        }
+        for ((layer, rect) in entries) {
+            var overlapCount = 1
+            for ((other, otherRect) in entries) {
+                if (other !== layer && Rect.intersects(rect, otherRect)) {
+                    overlapCount++
+                }
+            }
+            val safeAlpha = if (overlapCount > 1) {
+                1f - (1f - maxOpacity).toDouble().pow(1.0 / overlapCount).toFloat()
+            } else {
+                maxOpacity
+            }
+            layer.setAlpha(safeAlpha)
+        }
+    }
+
+    val tapDelay = 100L
+    val missDelay = 7500L
+
+    private fun addPoint(point: TrackPoint) {
+        runScopePost(tapDelay) {
+            layerMap[point.id] = PointFloatLayer(point)
+            recalcOverlappingAlpha()
+        }
+        runScopePost(missDelay) {
+            layerMap.remove(point.id)?.removeView()
+            recalcOverlappingAlpha()
+        }
+    }
+
+    private fun addSwipePoint(swipePoint: SwipeTrackPoint) {
+        runScopePost(tapDelay) {
+            layerMap[swipePoint.id] = SwipePointFloatLayer(swipePoint)
+            recalcOverlappingAlpha()
+        }
+        runScopePost(missDelay + swipePoint.duration) {
+            layerMap.remove(swipePoint.id)?.removeView()
+            recalcOverlappingAlpha()
         }
     }
 
     init {
         useLogLifecycle()
+        onCreated { service = this }
+        onDestroyed { service = null }
         useAliveFlow(isRunning)
         useAliveToast("轨迹提示")
         StopServiceReceiver.autoRegister()
         onCreated { trackNotif.notifyService() }
-        onCreated { windowManager.addView(view, layoutParams) }
-        onDestroyed { windowManager.removeView(view) }
-        onDestroyed { clearPosition() }
-        onCreated {
-            scope.launch {
-                resizeFlow.collect {
-                    layoutParams.width = ScreenUtils.getScreenWidth()
-                    layoutParams.height = ScreenUtils.getScreenHeight()
-                    windowManager.updateViewLayout(view, layoutParams)
-                }
-            }
-        }
     }
 
     companion object {
-        private val pointListFlow = MutableStateFlow<List<TrackPoint>>(emptyList())
-        private val swipePointListFlow = MutableStateFlow<List<SwipeTrackPoint>>(emptyList())
-        private fun clearPosition() {
-            pointListFlow.value = emptyList()
-            swipePointListFlow.value = emptyList()
-            autoIncreaseId.value = 0
-        }
-
-        private fun delayRemovePosition(id: Int) {
-            runMainPost(7500) {
-                pointListFlow.update { it.filter { v -> v.id != id } }
-                swipePointListFlow.update { it.filter { v -> v.id != id } }
-            }
-        }
-
+        @Volatile
+        private var service: TrackService? = null
         val isRunning: StateFlow<Boolean>
             field = MutableStateFlow(false)
 
         fun start() = startForegroundServiceByClass(TrackService::class)
         fun stop() = stopServiceByClass(TrackService::class)
         fun addA11yNodePosition(node: AccessibilityNodeInfo) {
-            if (!isRunning.value) return
-            addXyPosition(
-                node.casted.boundsInScreen.centerX().toFloat(),
-                node.casted.boundsInScreen.centerY().toFloat(),
+            service?.addPoint(
+                TrackPoint(
+                    node.casted.boundsInScreen.centerX().toFloat(),
+                    node.casted.boundsInScreen.centerY().toFloat(),
+                )
             )
         }
 
         fun addXyPosition(x: Float, y: Float) {
-            if (!isRunning.value) return
-            val p = TrackPoint(x, y)
-            pointListFlow.update { it + p }
-            delayRemovePosition(p.id)
+            service?.addPoint(TrackPoint(x, y))
         }
 
         fun addSwipePosition(
@@ -253,13 +341,13 @@ class TrackService : LifecycleService(), SavedStateRegistryOwner, OnSimpleLife {
             endY: Float,
             duration: Long
         ) {
-            if (!isRunning.value) return
-            val p = SwipeTrackPoint(
-                start = TrackPoint(startX, startY),
-                end = TrackPoint(endX, endY),
-                duration = duration,
+            service?.addSwipePoint(
+                SwipeTrackPoint(
+                    TrackPoint(startX, startY),
+                    TrackPoint(endX, endY),
+                    duration
+                )
             )
-            swipePointListFlow.update { it + p }
         }
     }
 }
@@ -271,20 +359,19 @@ private data class TrackPoint(
     val y: Float,
 ) {
     val id = autoIncreaseId.incrementAndGet()
-    val screenWidth = ScreenUtils.getScreenWidth().toFloat()
-    val screenHeight = ScreenUtils.getScreenHeight().toFloat()
+    val screenSize = ScreenUtils.getScreenSize()
     val rotation = app.compatDisplay.rotation
 
-    fun getCenter(size: Size, curRotation: Int): Offset {
-        val curWidth = size.width
-        val curHeight = size.height
-        val (physX, physY) = screenToPhysical(x, y, screenWidth, screenHeight, rotation)
-        return physicalToScreen(physX, physY, curWidth, curHeight, curRotation)
+    fun getCurCenter(): Offset {
+        val curSize = ScreenUtils.getScreenSize()
+        val curRotation = app.compatDisplay.rotation
+        val (physX, physY) = screenToPhysical(x, y, screenSize.width, screenSize.height, rotation)
+        return physicalToScreen(physX, physY, curSize.width, curSize.height, curRotation)
     }
 
     private fun screenToPhysical(
         sx: Float, sy: Float,
-        sw: Float, sh: Float,
+        sw: Int, sh: Int,
         rot: Int,
     ): Offset = when (rot) {
         Surface.ROTATION_0 -> Offset(sx, sy)
@@ -296,7 +383,7 @@ private data class TrackPoint(
 
     private fun physicalToScreen(
         px: Float, py: Float,
-        sw: Float, sh: Float,
+        sw: Int, sh: Int,
         rot: Int,
     ): Offset = when (rot) {
         Surface.ROTATION_0 -> Offset(px, py)
