@@ -21,7 +21,7 @@ class SafeActivityTaskManager(private val value: IActivityTaskManager) {
         when (HiddenApiType.getTasks) {
             1 -> value.getTasks(maxNum)
             2 -> value.getTasks(maxNum, false, false)
-            3 -> value.getTasks(maxNum, false, false, Display.INVALID_DISPLAY)
+            3 -> value.getTasks(maxNum, false, false, Display.DEFAULT_DISPLAY)
             else -> value.getTasks(maxNum)
         }
     }

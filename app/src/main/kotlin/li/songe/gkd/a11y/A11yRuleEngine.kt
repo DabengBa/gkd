@@ -3,6 +3,7 @@ package li.songe.gkd.a11y
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Bitmap
 import android.util.Log
+import android.view.Display
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -33,6 +34,7 @@ import li.songe.gkd.shizuku.shizukuContextFlow
 import li.songe.gkd.shizuku.uiAutomationFlow
 import li.songe.gkd.store.actualBlockA11yAppList
 import li.songe.gkd.store.storeFlow
+import li.songe.gkd.util.AndroidTarget
 import li.songe.gkd.util.AutomatorModeOption
 import li.songe.gkd.util.launchTry
 import li.songe.gkd.util.runMainPost
@@ -106,6 +108,8 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
     fun onA11yEvent(event: AccessibilityEvent?) {
         if (!effective) return
         if (!event.isUseful()) return
+        // 拒绝副屏无障碍事件
+        if (AndroidTarget.TIRAMISU && event.displayId != Display.DEFAULT_DISPLAY) return
         onA11yFeatEvent(event)
         if (event.eventType == CONTENT_CHANGED) {
             if (!isInteractive) return // 屏幕关闭后仍然有无障碍事件 type:2048, time:8094, app:com.miui.aod, cls:android.widget.TextView

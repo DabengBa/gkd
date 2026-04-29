@@ -4,8 +4,10 @@ import android.app.ActivityManager
 import android.app.ITaskStackListener
 import android.content.ComponentName
 import android.os.Parcel
+import android.view.Display
 import li.songe.gkd.a11y.ActivityScene
 import li.songe.gkd.a11y.updateTopActivity
+import li.songe.gkd.util.AndroidTarget
 
 object FixedTaskStackListener : ITaskStackListener.Stub() {
 
@@ -46,10 +48,18 @@ object FixedTaskStackListener : ITaskStackListener.Stub() {
     }
 
     override fun onTaskMovedToFront(taskId: Int) {
-        onTaskMovedToFrontCompat()
+        val taskInfo = shizukuContextFlow.value.getTasks().firstOrNull() ?: return
+        @Suppress("DEPRECATION")
+        if (taskInfo.id != taskId) {
+            return
+        }
+        onTaskMovedToFrontCompat(taskInfo.topActivity)
     }
 
     override fun onTaskMovedToFront(taskInfo: ActivityManager.RunningTaskInfo) {
+        if (AndroidTarget.Q && taskInfo.casted.displayId != Display.DEFAULT_DISPLAY) {
+            return
+        }
         onTaskMovedToFrontCompat(taskInfo.topActivity)
     }
 }

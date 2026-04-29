@@ -1,6 +1,7 @@
 package li.songe.gkd.shizuku
 
 
+import android.app.ActivityManager
 import android.content.ComponentName
 import android.content.pm.PackageManager
 import androidx.annotation.WorkerThread
@@ -125,10 +126,13 @@ class ShizukuContext(
         ) != null)
     }
 
-    fun topCpn(): ComponentName? {
-        return (activityTaskManager?.getTasks()
-            ?: activityManager?.getTasks())?.firstOrNull()?.topActivity
+    fun getTasks(maxNum: Int = 1): List<ActivityManager.RunningTaskInfo> {
+        return activityTaskManager?.getTasks(maxNum)
+            ?: activityManager?.getTasks(maxNum)
+            ?: emptyList()
     }
+
+    fun topCpn(): ComponentName? = getTasks().firstOrNull()?.topActivity
 
     init {
         if (activityTaskManager != null) {

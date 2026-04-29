@@ -14,4 +14,5 @@ import li.songe.remap.RemapType;
 @RequiresApi(Build.VERSION_CODES.Q)
 public class TaskInfoHidden {
     public Configuration configuration;
+    public int displayId;
 }

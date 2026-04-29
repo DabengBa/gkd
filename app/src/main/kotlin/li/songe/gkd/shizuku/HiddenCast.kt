@@ -4,6 +4,8 @@ package li.songe.gkd.shizuku
 
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.AccessibilityServiceInfoHidden
+import android.app.ActivityManager
+import android.app.TaskInfoHidden
 import android.app.UiAutomation
 import android.app.UiAutomationHidden
 import android.content.pm.PackageInfo
@@ -29,3 +31,5 @@ inline val KeyEvent.casted get() = this as KeyEventHidden
 inline val MotionEvent.casted get() = this as MotionEventHidden
 
 inline val PackageInfo.casted get() = this as PackageInfoHidden
+
+inline val ActivityManager.RunningTaskInfo.casted get() = this as TaskInfoHidden
